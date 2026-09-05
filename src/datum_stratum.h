@@ -57,6 +57,22 @@
 #define COINBASE_TYPE_RESPECTABLE 3 // 6500 byte max (whatsminers)
 #define COINBASE_TYPE_YUGE 4 // 16KB max (ePIC, bitaxe)
 #define COINBASE_TYPE_ANTMAIN2 5 // 2.25KB max (S21, +?)
+// The classes were sized to what SHA256d firmware could accept, since those
+// miners receive coinb1/coinb2 and hash the coinbase. On BLAKE2b work the
+// miner receives 000000 || H2 || 00000000 as coinb1 (H2 is the "Merge-mining
+// hook" tagged hash, which commits to the coinbase) and an empty coinb2, and
+// the work root is blake2b(0x00 || coinb1 || extranonce), so the coinbase
+// itself never reaches the miner. A smaller class therefore only omits some of
+// the pool's dictated outputs from the block; their value is paid to the
+// pool's address as the remainder. BLAKE2b work serves every miner
+// COINBASE_TYPE_YUGE once the full coinbase is ready and COINBASE_TYPE_TINY
+// before that (datum_stratum_coinbase_index); classes 1, 2, 3 and 5 are still
+// built, but their indexes never appear in a job id. The 16000-byte limit of
+// COINBASE_TYPE_YUGE covers the whole coinbase transaction
+// (datum_stratum_coinbase_fit_to_template subtracts the fixed bytes), so it
+// fits in STRATUM_COINBASE2_MAX_LEN (32768 hex characters, 16384 bytes) and
+// holds a little under 512 P2WPKH outputs (31 bytes each), the most a
+// coinbaser dictates, but only about 365 taproot outputs (43 bytes each).
 
 // Submitblock json rpc command max size is max block size * 2 for ascii plus some breathing room
 #define MAX_SUBMITBLOCK_SIZE 8500000
@@ -273,7 +289,7 @@ bool datum_stratum_job_blake2b_commitment_from_txn(const T_DATUM_STRATUM_JOB *s,
 bool datum_stratum_job_blake2b_commitment(T_DATUM_STRATUM_JOB *s, const T_DATUM_STRATUM_COINBASE *cb, bool subsidy_only, unsigned char pot, unsigned char *commitment, unsigned char *coinb1);
 bool datum_stratum_share_is_unmasked_block(
 	const T_DATUM_STRATUM_JOB *job, const unsigned char *share_hash);
-unsigned int datum_stratum_coinbase_index(const T_DATUM_STRATUM_THREADPOOL_DATA *sdata, const T_DATUM_MINER_DATA *miner, bool new_block);
+unsigned int datum_stratum_coinbase_index(const T_DATUM_STRATUM_THREADPOOL_DATA *sdata, bool new_block);
 void stratum_job_merkle_root_calc(T_DATUM_STRATUM_JOB *s, unsigned char *coinbase_txn_hash, unsigned char *merkle_root_output);
 int assembleBlockAndSubmit(uint8_t *block_header, uint8_t *coinbase_txn, size_t coinbase_txn_size, T_DATUM_STRATUM_JOB *job, T_DATUM_STRATUM_THREADPOOL_DATA *sdata, const char *block_hash_hex, bool empty_work, const unsigned char *extranonce);
 size_t datum_stratum_coinbase_for_block_hex(char *out, size_t out_size, const uint8_t *coinbase_txn, size_t coinbase_txn_size, bool add_witness);

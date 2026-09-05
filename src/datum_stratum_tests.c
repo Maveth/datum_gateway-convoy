@@ -202,19 +202,21 @@ static void datum_blake2b_h_not_zero_tests(void) {
 static void datum_blake2b_coinbase_selection_tests(void) {
 	T_DATUM_STRATUM_THREADPOOL_DATA *sdata = calloc(1, sizeof(*sdata));
 	T_DATUM_STRATUM_JOB job = {0};
-	T_DATUM_MINER_DATA miner = {.coinbase_selection = 3};
 	
 	datum_test(sdata != NULL);
 	if (!sdata) return;
-	datum_test(datum_stratum_coinbase_index(sdata, &miner, true) == DATUM_COINBASE_ID_EMPTY);
-	datum_test(datum_stratum_coinbase_index(sdata, &miner, false) == 0);
+	datum_test(datum_stratum_coinbase_index(sdata, true) == DATUM_COINBASE_ID_EMPTY);
+	datum_test(datum_stratum_coinbase_index(sdata, false) == 0);
 	sdata->cur_stratum_job = &job;
 	sdata->full_coinbase_ready = true;
-	datum_test(datum_stratum_coinbase_index(sdata, &miner, false) == 0);
+	datum_test(datum_stratum_coinbase_index(sdata, false) == 0);
 	job.job_state = JOB_STATE_FULL_PRIORITY_WAIT_COINBASER;
-	datum_test(datum_stratum_coinbase_index(sdata, &miner, false) == 3);
-	miner.coinbase_selection = MAX_COINBASE_TYPES;
-	datum_test(datum_stratum_coinbase_index(sdata, &miner, false) == 0);
+	// With the job state at or above JOB_STATE_FULL_PRIORITY_WAIT_COINBASER and
+	// full_coinbase_ready set, every miner is served the largest class: there
+	// is no per-miner selection on BLAKE2b work.
+	datum_test(datum_stratum_coinbase_index(sdata, false) == COINBASE_TYPE_YUGE);
+	sdata->full_coinbase_ready = false;
+	datum_test(datum_stratum_coinbase_index(sdata, false) == 0);
 	free(sdata);
 }
 

@@ -1450,15 +1450,20 @@ int client_mining_authorize(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	return 0;
 }
 
+// The coinbase a BLAKE2b job commits to, the same for every miner: the
+// subsidy-only one for new-block work, COINBASE_TYPE_TINY (pays only the pool)
+// while the job state is below JOB_STATE_FULL_PRIORITY_WAIT_COINBASER or
+// full_coinbase_ready is unset, and COINBASE_TYPE_YUGE after that. The classes
+// were sized to what SHA256d firmware could accept (see the COINBASE_TYPE_
+// defines); on BLAKE2b work the miner never receives the coinbase, so there is
+// no per-miner selection.
 unsigned int datum_stratum_coinbase_index(
-	const T_DATUM_STRATUM_THREADPOOL_DATA *sdata,
-	const T_DATUM_MINER_DATA *miner, bool new_block) {
+	const T_DATUM_STRATUM_THREADPOOL_DATA *sdata, bool new_block) {
 	if (new_block) return DATUM_COINBASE_ID_EMPTY;
-	if (!sdata || !miner || !sdata->cur_stratum_job ||
+	if (!sdata || !sdata->cur_stratum_job ||
 	    sdata->cur_stratum_job->job_state < JOB_STATE_FULL_PRIORITY_WAIT_COINBASER ||
-	    !sdata->full_coinbase_ready ||
-	    miner->coinbase_selection >= MAX_COINBASE_TYPES) return 0;
-	return miner->coinbase_selection;
+	    !sdata->full_coinbase_ready) return 0;
+	return COINBASE_TYPE_YUGE;
 }
 
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block) {
@@ -1552,7 +1557,7 @@ int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool 
 	const int notify_out_buf_start = c->out_buf;
 	datum_socket_send_string_to_client(c, "{\"id\":null,\"method\":\"mining.notify\",\"params\":[");
 	
-	cbselect = datum_stratum_coinbase_index(sdata, m, new_block);
+	cbselect = datum_stratum_coinbase_index(sdata, new_block);
 	const bool subsidy_only = cbselect == DATUM_COINBASE_ID_EMPTY;
 	cb = subsidy_only ? &j->subsidy_only_coinbase : &j->coinbase[cbselect];
 	
@@ -1622,64 +1627,18 @@ int send_mining_set_difficulty(T_DATUM_CLIENT_DATA *c) {
 void datum_stratum_fingerprint_by_UA(T_DATUM_MINER_DATA *m) {
 	// TODO: Make this a little more efficient. perhaps move to a loadable definitions file of some kind.
 	
-	if (strstr(m->useragent, "Antminer A3") == m->useragent) {
-		m->coinbase_selection = 0;
-		return;
-	}
-
-	// S21 tested to handle 2.25KB coinbase work on all versions released
-	// UA starts with: Antminer S21/
-	// S21 Pro NOT confirmed to work this way (yet)... so keep the /
-	if (strstr(m->useragent, "Antminer S21/") == m->useragent) {
-		m->coinbase_selection = 5; // ANTMAIN2
-		return;
-	}
-	
-	// the ePIC control boards can handle almost any size coinbase
-	// UA starts with: PowerPlay-BM/
-	if (strstr(m->useragent, "PowerPlay-BM/") == m->useragent) {
-		m->coinbase_selection = 4; // YUGE
-		return;
-	}
-	
-	// "vinsh" reports as xminer
-	// Tested to handle up to 16KB
-	if (strstr(m->useragent, "xminer-1.") == m->useragent) {
-		m->coinbase_selection = 4; // YUGE
-		return;
-	}
-	
-	// whatsminer works fine with about a 6.5 KB coinbase
-	// UA starts with: whatsminer/v1
-	if (strstr(m->useragent, "whatsminer/v1") == m->useragent) {
-		m->coinbase_selection = 3; // RESPECTABLE
-		return;
-	}
-	
-	// Braiins firmware
-	// Appears to handle arbitrary coinbase sizes, however not extensively tested on all firmware versions
-	// feed the S21-like coinbase for now, which is at least moderately sized
-	// UA contains: bosminer-plus-tuner
-	if (strstr(m->useragent, "bosminer-plus-tuner") != NULL) { // match anywhere in string, not just beginning
-		m->coinbase_selection = 5; // ANTMAIN2
-		return;
-	}
-	
-	// Nicehash, sadly needs a smaller coinbase than even antminer s19s
-	// they also need a high minimum difficulty
+	// For SHA256d work this function also chose the coinbase class the miner's
+	// firmware was known to accept: COINBASE_TYPE_TINY for the Antminer A3, the
+	// 2250-byte class for the Antminer S21 ("Antminer S21/") and Braiins
+	// ("bosminer-plus-tuner", matched anywhere in the string), 16000 for ePIC
+	// ("PowerPlay-BM/") and xminer ("xminer-1."), 6500 for Whatsminer
+	// ("whatsminer/v1") and the Bitaxe ("bitaxe"), 500 for NiceHash, and the
+	// 755-byte Antminer S19 class for everything else. BLAKE2b work serves
+	// every miner COINBASE_TYPE_YUGE (datum_stratum_coinbase_index), so only
+	// the NiceHash minimum difficulty remains.
 	if (strstr(m->useragent, "NiceHash/") == m->useragent) {
 		m->current_diff=524288;
 		m->forced_high_min_diff=524288;
-		m->coinbase_selection = 1; // TINY
-		return;
-	}
-	
-	// The Bitaxe is tested to work with a large coinbase
-	// However, it does slow work changes slightly when they're YUGE, so we'll go with
-	// the whatsminer tested size as a compromise.  also should save some bandwidth, which
-	// is probably not a bad plan, given the low odds of a bitaxe finding a block.
-	if (strstr(m->useragent, "bitaxe") == m->useragent) {
-		m->coinbase_selection = 3; // RESPECTABLE
 		return;
 	}
 }
@@ -1704,9 +1663,9 @@ int client_mining_subscribe(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	// set default diff
 	m->current_diff = datum_config.stratum_v1_vardiff_min;
 	
-	// default to the antminer workaround, which appears to be universally compatible
-	// except for NiceHash.
-	m->coinbase_selection = 2;
+	// The class every miner is served on BLAKE2b work once the full coinbase is
+	// ready (datum_stratum_coinbase_index); kept per miner only for the API.
+	m->coinbase_selection = COINBASE_TYPE_YUGE;
 	
 	m->useragent[0] = 0;
 	if (params_obj) {
